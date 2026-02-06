@@ -17,7 +17,7 @@ def compute_trip_limit(alpha, beta, density):
 def run_grid():
     results = []
 
-    n_cities = [10, 50, 100, 1000]
+    n_cities = [10, 50, 100]
     alpha_values = [0.0, 1.0, 2.0, 4.0]
     beta_values = [0.5, 1.0, 2.0, 4.0]
     density_values = [0.2, 0.5, 1.0]
@@ -80,13 +80,13 @@ def run_grid():
             })
 
     df = pd.DataFrame(results)
-    df.to_csv("results_grid.csv", index=False)
+    df.to_csv("results_grid_split_gold_fraction_0_4.csv", index=False)
 
     # summary
     ok = df[np.isfinite(df["my_cost"]) & np.isfinite(df["baseline_cost"])]
     win_rate = (ok["my_cost"] < ok["baseline_cost"]).mean() * 100 if len(ok) else 0.0
 
-    print("\nSaved: results_grid.csv")
+    print("\nSaved: results_grid_split_gold_fraction_0_4.csv")
     print(f"Valid runs: {len(ok)}/{len(df)} | Win rate: {win_rate:.1f}%")
 
 if __name__ == "__main__":

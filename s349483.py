@@ -3,7 +3,9 @@ from Problem import Problem
 import numpy as np
 import networkx as nx
 import random
+import math
 
+PICKUP_FRACTION = 0.4
 
 # --------------------------
 # Data extraction
@@ -47,7 +49,7 @@ def estimate_density(p):
     e = p.graph.number_of_edges()
     return 2 * e / (n * (n - 1))
 
-
+"""
 def compute_trip_limit(alpha, beta, density):
     if alpha <= 0 or beta < 2:
         return float("inf")
@@ -61,6 +63,27 @@ def compute_trip_limit(alpha, beta, density):
 
     density_bonus = int(density * 3)
     return max(1, min(8, base + density_bonus))
+"""
+
+def compute_pickup_cap(dist_to_base, alpha, beta):
+    if alpha <= 0 or beta <= 1:
+        return float("inf")
+    if dist_to_base <= 0:
+        return float("inf")
+    ratio = 3.0
+    cap = (ratio ** (1.0 / beta)) * (dist_to_base ** ((1.0 - beta) / beta)) / alpha
+    return max(cap, 0.0)
+
+
+def compute_chunk_plan(gold, cap):
+    if not math.isfinite(cap) or cap <= 0:
+        return 0, gold
+    if gold <= cap:
+        return 0, gold
+    trips = int(math.ceil(gold / cap))
+    extra_trips = max(0, trips - 1)
+    last_chunk = gold - (extra_trips * cap)
+    return extra_trips, last_chunk
 
 
 # --------------------------
@@ -115,9 +138,7 @@ def calculate_fitness(ind, gold_values, graph, path_map, alpha, beta, density):
     current = 0
     carried = 0.0
     total = 0.0
-
-    trip_limit = compute_trip_limit(alpha, beta, density)
-    cities_in_trip = 0
+    remaining = gold_values.copy()
 
     def path_cost(path_nodes, weight):
         if not path_nodes or len(path_nodes) < 2:
@@ -128,36 +149,79 @@ def calculate_fitness(ind, gold_values, graph, path_map, alpha, beta, density):
             cost += d + (d * alpha * weight) ** beta
         return cost
 
+    def path_distance(path_nodes):
+        if not path_nodes or len(path_nodes) < 2:
+            return 0.0
+        dist = 0.0
+        for u, v in zip(path_nodes, path_nodes[1:]):
+            dist += float(graph[u][v]["dist"])
+        return dist
+
     for nxt in ind:
-        g = float(gold_values[nxt])
+        g_rem = float(remaining[nxt])
+        if g_rem <= 0:
+            continue
+        if alpha <= 0 or beta <= 1:
+            g = g_rem
+        else:
+            g = g_rem * PICKUP_FRACTION
+        remaining[nxt] = g_rem - g
+
+        p_curr_nxt = path_map[current][nxt]  #da posizione attuale a città 
+        p_curr_base = path_map[current][0]   #da posizione attuale a base
+        p_base_nxt = path_map[0][nxt]        # da base a città
+        p_nxt_base = path_map[nxt][0]        # da città a base
+
+        # A: continuo senza scaricare 
+        cA_go = path_cost(p_curr_nxt, carried)
+        cA_ret = path_cost(p_nxt_base, carried + g)
+        scoreA = cA_go + cA_ret
+
+        # B: scarico in base prima
+        cB_ret_now = path_cost(p_curr_base, carried)
+        cB_go = path_cost(p_base_nxt, 0.0)
+        cB_ret = path_cost(p_nxt_base, g)
+        scoreB = cB_ret_now + cB_go + cB_ret
+
+        if scoreB < scoreA:
+            total += cB_ret_now + cB_go
+            carried = g
+        else:
+            total += cA_go
+            carried += g
+
+        current = int(nxt)
+    
+    #potrebbero esserci ancora città on oro residuo
+    remaining_cities = [i for i in range(1, len(gold_values)) if remaining[i] > 0]
+    #finchè ci sono città con oro rimanente, scelgo la più vicina e ripeto lo stesso schema di prima (confronto A o B)
+    while remaining_cities:
+        nxt = min(remaining_cities, key=lambda c: path_distance(path_map[current][c]))
+        g = float(remaining[nxt])
 
         p_curr_nxt = path_map[current][nxt]
         p_curr_base = path_map[current][0]
         p_base_nxt = path_map[0][nxt]
         p_nxt_base = path_map[nxt][0]
 
-        # A: vai diretto + proxy ritorno
         cA_go = path_cost(p_curr_nxt, carried)
         cA_ret = path_cost(p_nxt_base, carried + g)
         scoreA = cA_go + cA_ret
 
-        # B: scarica + vai + proxy ritorno
         cB_ret_now = path_cost(p_curr_base, carried)
         cB_go = path_cost(p_base_nxt, 0.0)
         cB_ret = path_cost(p_nxt_base, g)
         scoreB = cB_ret_now + cB_go + cB_ret
 
-        force_unload = (cities_in_trip >= trip_limit and carried > 0)
-
-        if scoreB < scoreA or force_unload:
+        if scoreB < scoreA:
             total += cB_ret_now + cB_go
             carried = g
-            cities_in_trip = 1
         else:
             total += cA_go
             carried += g
-            cities_in_trip += 1
 
+        remaining[nxt] = 0.0
+        remaining_cities.remove(nxt)
         current = int(nxt)
 
     total += path_cost(path_map[current][0], carried)
@@ -214,9 +278,7 @@ def reconstruct_path(order, gold_values, path_map, alpha, beta, graph, density):
     full_path = []
     current = 0
     carried = 0.0
-
-    trip_limit = compute_trip_limit(alpha, beta, density)
-    cities_in_trip = 0
+    remaining = gold_values.copy()
 
     local_cache = {}
 
@@ -241,16 +303,30 @@ def reconstruct_path(order, gold_values, path_map, alpha, beta, graph, density):
             cost += d + (d * alpha * weight) ** beta
         return cost
 
-    def append_path(path_nodes, collect_end=False, end_node=None):
+    def path_distance(path_nodes):
+        if not path_nodes or len(path_nodes) < 2:
+            return 0.0
+        dist = 0.0
+        for u, v in zip(path_nodes, path_nodes[1:]):
+            dist += float(graph[u][v]["dist"])
+        return dist
+
+    def append_path(path_nodes, gold_amount=0.0):
+        end_node = path_nodes[-1] if path_nodes else None
         for node in path_nodes[1:]:
-            g = 0.0
-            if collect_end and end_node is not None and node == end_node:
-                g = float(gold_values[end_node])
+            g = gold_amount if end_node is not None and node == end_node else 0.0
             full_path.append((int(node), float(g)))
 
     for nxt in order:
         nxt = int(nxt)
-        g = float(gold_values[nxt])
+        g_rem = float(remaining[nxt])
+        if g_rem <= 0:
+            continue
+        if alpha <= 0 or beta <= 1:
+            g = g_rem
+        else:
+            g = g_rem * PICKUP_FRACTION
+        remaining[nxt] = g_rem - g
 
         p_curr_nxt = get_path(current, nxt)
         p_curr_base = get_path(current, 0)
@@ -268,23 +344,51 @@ def reconstruct_path(order, gold_values, path_map, alpha, beta, graph, density):
         cB_ret = path_cost(p_nxt_base, g)
         scoreB = cB_ret_now + cB_go + cB_ret
 
-        force_unload = (cities_in_trip >= trip_limit and carried > 0)
-
-        if scoreB < scoreA or force_unload:
+        if scoreB < scoreA:
             if current != 0:
-                append_path(p_curr_base, collect_end=False)
-            append_path(p_base_nxt, collect_end=True, end_node=nxt)
+                append_path(p_curr_base, gold_amount=0.0)
+            append_path(p_base_nxt, gold_amount=g)
             carried = g
-            cities_in_trip = 1
         else:
-            append_path(p_curr_nxt, collect_end=True, end_node=nxt)
+            append_path(p_curr_nxt, gold_amount=g)
             carried += g
-            cities_in_trip += 1
 
         current = nxt
 
+    remaining_cities = [i for i in range(1, len(gold_values)) if remaining[i] > 0]
+    while remaining_cities:
+        nxt = min(remaining_cities, key=lambda c: path_distance(get_path(current, c)))
+        g = float(remaining[nxt])
+
+        p_curr_nxt = get_path(current, nxt)
+        p_curr_base = get_path(current, 0)
+        p_base_nxt = get_path(0, nxt)
+        p_nxt_base = get_path(nxt, 0)
+
+        cA_go = path_cost(p_curr_nxt, carried)
+        cA_ret = path_cost(p_nxt_base, carried + g)
+        scoreA = cA_go + cA_ret
+
+        cB_ret_now = path_cost(p_curr_base, carried)
+        cB_go = path_cost(p_base_nxt, 0.0)
+        cB_ret = path_cost(p_nxt_base, g)
+        scoreB = cB_ret_now + cB_go + cB_ret
+
+        if scoreB < scoreA:
+            if current != 0:
+                append_path(p_curr_base, gold_amount=0.0)
+            append_path(p_base_nxt, gold_amount=g)
+            carried = g
+        else:
+            append_path(p_curr_nxt, gold_amount=g)
+            carried += g
+
+        remaining[nxt] = 0.0
+        remaining_cities.remove(nxt)
+        current = nxt
+
     if current != 0:
-        append_path(get_path(current, 0), collect_end=False)
+        append_path(get_path(current, 0), gold_amount=0.0)
 
     return full_path
 
@@ -414,7 +518,6 @@ def check_solution_score(p: Problem, path):
     return total
 
 
-
 if __name__ == '__main__':
     """
     p = Problem(1000, density=0.2, alpha=1, beta=1, seed=42)
@@ -477,7 +580,7 @@ if __name__ == '__main__':
             improvement = (baseline_cost - my_cost) / baseline_cost * 100.0 if np.isfinite(my_cost) else np.nan
 
             density_used = density
-            trip_limit_used = compute_trip_limit(alpha, beta, density)
+            #trip_limit_used = compute_trip_limit(alpha, beta, density)
             
             results.append({
                 "n_cities": n,
