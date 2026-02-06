@@ -9,10 +9,15 @@ from tqdm import tqdm
 from Problem import Problem
 from s349483 import solution, check_solution_score
 
+def compute_trip_limit(alpha, beta, density):
+    if alpha <= 0 or beta < 2:
+        return np.inf
+    return max(1, int((6 - beta) * (0.5 + density / 2)))
+
 def run_grid():
     results = []
 
-    n_cities = [10, 50, 100]
+    n_cities = [10, 50, 100, 1000]
     alpha_values = [0.0, 1.0, 2.0, 4.0]
     beta_values = [0.5, 1.0, 2.0, 4.0]
     density_values = [0.2, 0.5, 1.0]
@@ -39,11 +44,16 @@ def run_grid():
             # miglioramento
             improvement = (baseline_cost - my_cost) / baseline_cost * 100.0 if np.isfinite(my_cost) else np.nan
 
+            density_used = density
+            trip_limit_used = compute_trip_limit(alpha, beta, density)
+            
             results.append({
                 "n_cities": n,
                 "density": density,
+                "density_used": density_used,
                 "alpha": alpha,
                 "beta": beta,
+                "trip_limit_used": trip_limit_used,
                 "seed": seed,
                 "baseline_cost": baseline_cost,
                 "my_cost": my_cost,
@@ -56,8 +66,10 @@ def run_grid():
             results.append({
                 "n_cities": n,
                 "density": density,
+                "density_used": density,
                 "alpha": alpha,
                 "beta": beta,
+                "trip_limit_used": np.nan,
                 "seed": seed,
                 "baseline_cost": np.nan,
                 "my_cost": np.nan,
@@ -70,24 +82,12 @@ def run_grid():
     df = pd.DataFrame(results)
     df.to_csv("results_grid.csv", index=False)
 
-    # piccolo summary a schermo
+    # summary
     ok = df[np.isfinite(df["my_cost"]) & np.isfinite(df["baseline_cost"])]
     win_rate = (ok["my_cost"] < ok["baseline_cost"]).mean() * 100 if len(ok) else 0.0
 
     print("\nSaved: results_grid.csv")
     print(f"Valid runs: {len(ok)}/{len(df)} | Win rate: {win_rate:.1f}%")
-
-    # Top 10 miglioramenti
-    print("\nTop 10 improvements (%):")
-    print(ok.sort_values("improvement_pct", ascending=False).head(10)[
-        ["n_cities", "density", "alpha", "beta", "baseline_cost", "my_cost", "improvement_pct", "path_len"]
-    ].to_string(index=False))
-
-    # Peggiori 10
-    print("\nWorst 10 improvements (%):")
-    print(ok.sort_values("improvement_pct", ascending=True).head(10)[
-        ["n_cities", "density", "alpha", "beta", "baseline_cost", "my_cost", "improvement_pct", "path_len"]
-    ].to_string(index=False))
 
 if __name__ == "__main__":
     run_grid()

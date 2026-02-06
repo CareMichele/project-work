@@ -1,377 +1,435 @@
+from tqdm import tqdm
 from Problem import Problem
 import numpy as np
 import networkx as nx
 import random
 
-def get_problem_data(p):
-    num_cities = len(p.graph.nodes)
-    
-    #gold_values[i] darà l'oro della città i 
-    gold_values = np.array([p.graph.nodes[i]['gold'] for i in range(num_cities)])
-    
-    #inizializzo matrice vuota
-    dist_matrix = np.zeros((num_cities, num_cities))
-    
-    #restituisce iteratore di (sorgente, {dest: distanza})
-    path_iterator = nx.all_pairs_dijkstra_path_length(p.graph, weight='dist')
-    
-    #se le città sono tante, FW è lento, usiamo Dijkstra
-    for source, dist_map in path_iterator:
-        for dest, dist in dist_map.items():
-            dist_matrix[source][dest] = dist
-            
-    return num_cities, gold_values, dist_matrix
 
-def greedy_from_base(num_cities, dist_matrix):
-    """Greedy partendo sempre dalla base"""
-    unvisited = set(range(1, num_cities))
+# --------------------------
+# Data extraction
+# --------------------------
+def get_problem_data(p, threshold=100):
+    n = p.graph.number_of_nodes()
+
+    gold_dict = nx.get_node_attributes(p.graph, "gold")
+    gold_values = np.array([float(gold_dict[i]) for i in range(n)], dtype=float)
+
+    dist_matrix = None
+    path_map = None
+
+    if n <= threshold:
+        print(f"N={n} <= {threshold}: pre-calcolo dist_matrix + path_map per GA...")
+
+        # distanze minime (numeri) — veloce
+        dist_matrix = np.zeros((n, n), dtype=float)
+        for src, dist_map in nx.all_pairs_dijkstra_path_length(p.graph, weight="dist"):
+            for dst, d in dist_map.items():
+                dist_matrix[src][dst] = float(d)
+
+        # shortest paths (lista nodi) — serve per fitness corretta + reconstruct
+        path_map = dict(nx.all_pairs_dijkstra_path(p.graph, weight="dist"))
+    else:
+        print(f"N={n} > {threshold}: modalità lightweight (solo gold).")
+
+    return n, gold_values, dist_matrix, path_map
+
+
+def estimate_density(p):
+    if hasattr(p, "density"):
+        try:
+            return float(p.density)
+        except Exception:
+            pass
+
+    n = p.graph.number_of_nodes()
+    if n <= 1:
+        return 1.0
+    e = p.graph.number_of_edges()
+    return 2 * e / (n * (n - 1))
+
+
+def compute_trip_limit(alpha, beta, density):
+    if alpha <= 0 or beta < 2:
+        return float("inf")
+
+    if beta >= 4:
+        base = 1
+    elif beta >= 2:
+        base = 1 if density <= 0.3 else 2
+    else:
+        return float("inf")
+
+    density_bonus = int(density * 3)
+    return max(1, min(8, base + density_bonus))
+
+
+# --------------------------
+# GA helpers (solo N piccoli)
+# --------------------------
+def greedy_from_base(n, dist_matrix):
+    unvisited = set(range(1, n))
     tour = []
     current = 0
-    
     while unvisited:
-        next_city = min(unvisited, key=lambda c: dist_matrix[current][c])
-        
-        tour.append(next_city)
-        unvisited.remove(next_city)
-        current = next_city
-    
-    return np.array(tour)
+        nxt = min(unvisited, key=lambda c: dist_matrix[current][c])
+        tour.append(nxt)
+        unvisited.remove(nxt)
+        current = nxt
+    return np.array(tour, dtype=int)
 
-def greedy_nearest_neighbor(num_cities, dist_matr):
-    """
-    Greedy partendo da una città casuale.
-    Utile per creare diversità nella popolazione mantenendo buoni tratti locali.
-    """
-    unvisited = set(range(1,num_cities))
-    
-    #nodo di partenza a caso
-    start_node = random.choice(list(unvisited))
-    
-    tour = [start_node]
-    unvisited.remove(start_node)
-    current_node = start_node
-    
-    #nearest neighbor
+
+def greedy_nearest_neighbor(n, dist_matrix):
+    unvisited = set(range(1, n))
+    start = random.choice(list(unvisited))
+    tour = [start]
+    unvisited.remove(start)
+    current = start
     while unvisited:
-        #trova il vicino più prossimo usando la matrice distanze
-        next_node = min(unvisited, key = lambda c: dist_matr[current_node][c])
-        
-        tour.append(next_node)
-        unvisited.remove(next_node)
-        current_node = next_node
-        
-    return np.array(tour)
+        nxt = min(unvisited, key=lambda c: dist_matrix[current][c])
+        tour.append(nxt)
+        unvisited.remove(nxt)
+        current = nxt
+    return np.array(tour, dtype=int)
 
-def initialize_population(num_cities, pop_size, dist_matrix):
-    population=[]
-    
-    #la base non viene inclusa
-    base_tour = np.arange(1,num_cities)
-    
-    n_greedy = int(pop_size * 0.2)
-    
+
+def initialize_population(n, pop_size, dist_matrix):
+    population = []
+    base_tour = np.arange(1, n, dtype=int)
+
+    n_greedy = int(pop_size * 0.5) if n < 50 else int(pop_size * 0.2)
+
     for i in range(pop_size):
-        if i==0:
-            individual = greedy_from_base(num_cities, dist_matrix)
-        #hybrid initialization (20% hybrid, 80% random)
+        if i == 0:
+            ind = greedy_from_base(n, dist_matrix)
         elif i < n_greedy:
-            individual = greedy_nearest_neighbor(num_cities, dist_matrix)
+            ind = greedy_nearest_neighbor(n, dist_matrix)
         else:
-            individual = base_tour.copy()
-            np.random.shuffle(individual)
-            
-        population.append(individual)
-        
+            ind = base_tour.copy()
+            np.random.shuffle(ind)
+        population.append(ind)
+
     return population
 
-def calculate_fitness(ind, gold_values, dist_matrix, alpha, beta):
-    current_node = 0
-    current_gold = 0
-    total_cost = 0
-    
-    for next_node in ind:
-        dist_direct = dist_matrix[current_node][next_node] #km per andare diretti
-        dist_to_base = dist_matrix[current_node][0] #km per tornare a casa
-        dist_from_base = dist_matrix[0][next_node] #km da casa alla prossima
-        
-        gold_at_next= gold_values[next_node] #oro che trovo la
-        
-        #opzione 1: vado dritto
-        cost_direct = dist_direct + (dist_direct * alpha * current_gold)**beta
-        
-        #opzione 2: passo dalla base
-        cost_return = dist_to_base + (dist_to_base * alpha * current_gold)**beta
-        cost_leave = dist_from_base
-        cost_via_base = cost_return + cost_leave
-        
-        #confronto
-        if cost_via_base < cost_direct:
-            #conviene scaricare
-            total_cost+=cost_via_base
-            current_gold = gold_at_next
-            #concettualmente abbiamo fatto current -> 0 -> next
-        else:
-            #conviene andare avanti
-            total_cost+=cost_direct
-            current_gold+=gold_at_next #aggiungo nuovo ora a quello vecchio
-            
-        current_node = next_node
-    
-    #fine giro (bisogna tornare alla base)
-    dist_final = dist_matrix[current_node][0]
-    total_cost+=dist_final+(dist_final*alpha*current_gold)**beta
-    
-    return total_cost
 
-def tournament_selection(population, tau = 3):
+def calculate_fitness(ind, gold_values, graph, path_map, alpha, beta, density):
+    current = 0
+    carried = 0.0
+    total = 0.0
+
+    trip_limit = compute_trip_limit(alpha, beta, density)
+    cities_in_trip = 0
+
+    def path_cost(path_nodes, weight):
+        if not path_nodes or len(path_nodes) < 2:
+            return 0.0
+        cost = 0.0
+        for u, v in zip(path_nodes, path_nodes[1:]):
+            d = float(graph[u][v]["dist"])
+            cost += d + (d * alpha * weight) ** beta
+        return cost
+
+    for nxt in ind:
+        g = float(gold_values[nxt])
+
+        p_curr_nxt = path_map[current][nxt]
+        p_curr_base = path_map[current][0]
+        p_base_nxt = path_map[0][nxt]
+        p_nxt_base = path_map[nxt][0]
+
+        # A: vai diretto + proxy ritorno
+        cA_go = path_cost(p_curr_nxt, carried)
+        cA_ret = path_cost(p_nxt_base, carried + g)
+        scoreA = cA_go + cA_ret
+
+        # B: scarica + vai + proxy ritorno
+        cB_ret_now = path_cost(p_curr_base, carried)
+        cB_go = path_cost(p_base_nxt, 0.0)
+        cB_ret = path_cost(p_nxt_base, g)
+        scoreB = cB_ret_now + cB_go + cB_ret
+
+        force_unload = (cities_in_trip >= trip_limit and carried > 0)
+
+        if scoreB < scoreA or force_unload:
+            total += cB_ret_now + cB_go
+            carried = g
+            cities_in_trip = 1
+        else:
+            total += cA_go
+            carried += g
+            cities_in_trip += 1
+
+        current = int(nxt)
+
+    total += path_cost(path_map[current][0], carried)
+    return total
+
+
+def tournament_selection(population, tau=3):
     pool = random.sample(population, k=tau)
     return min(pool, key=lambda x: x[0])
 
+
 def crossover(p1, p2):
     size = len(p1)
-    
-    l1 = np.random.randint(0,size)
-    l2 = np.random.randint(0,size)
+    l1 = np.random.randint(0, size)
+    l2 = np.random.randint(0, size)
     if l1 > l2:
-        l1,l2 = l2,l1
-        
-    child = np.full(size,-1)
-    
+        l1, l2 = l2, l1
+
+    child = np.full(size, -1, dtype=int)
     child[l1:l2+1] = p1[l1:l2+1]
-    
-    #cycle crossover (pag. 104 pdf 05)
-    pos=0
-    for i in p2:
-        if i not in child:
+
+    pos = 0
+    for x in p2:
+        if x not in child:
             while l1 <= pos <= l2:
-                pos+=1
+                pos += 1
                 if pos >= size:
-                    pos=0
-            child[pos] = i
-            pos+=1
+                    pos = 0
+            child[pos] = x
+            pos += 1
             if pos >= size:
                 pos = 0
-            
+
     return child
+
 
 def mutate(individual, mutation_rate):
     if np.random.random() < mutation_rate:
         size = len(individual)
-        
-        #scramble mutation (pag.99 pdf 05)
-        l1 = np.random.randint(0,size)
-        l2 = np.random.randint(0,size)
-        #new_tour = p.tour[:]
-        if l1>l2:
-            l1,l2 = l2,l1
-            
+        l1 = np.random.randint(0, size)
+        l2 = np.random.randint(0, size)
+        if l1 > l2:
+            l1, l2 = l2, l1
         segment = individual[l1:l2+1].copy()
         np.random.shuffle(segment)
         individual[l1:l2+1] = segment
-        
     return individual
 
-def reconstruct_path(ind, gold_values, dist_matrix,  alpha, beta, graph):
-    """
-    Costruisce il percorso FISICO completo.
-    Se tra A e B non c'è una strada diretta, inserisce i nodi di transito
-    trovati con lo shortest path di NetworkX.
-    """
+
+# --------------------------
+# Path reconstruction (per output)
+# --------------------------
+def reconstruct_path(order, gold_values, path_map, alpha, beta, graph, density):
     full_path = []
-    current_node = 0
-    current_gold = 0.0
-    
-    # Helper locale per aggiungere segmenti di percorso fisico
-    def add_segment(start, end, collect_gold_at_end=False):
-        # Chiediamo a NetworkX la strada fisica (nodi intermedi)
-        # Esempio: start=0, end=5 -> physical_nodes=[0, 2, 4, 5]
-        physical_nodes = nx.shortest_path(graph, source=start, target=end, weight='dist')
-        
-        # Saltiamo il primo nodo perché è 'current_node' (già aggiunto o è lo start)
-        for node in physical_nodes[1:]:
-            g = 0 # Di base transitiamo (0 gold raccolto)
-            
-            # Se siamo arrivati alla destinazione e dovevamo raccogliere
-            if node == end and collect_gold_at_end:
-                g = gold_values[end]
-            
-            full_path.append((node, g))
+    current = 0
+    carried = 0.0
 
-    for next_node in ind:
-        # --- LOGICA DI DECISIONE (identica alla fitness) ---
-        dist_direct = dist_matrix[current_node][next_node]
-        dist_to_base = dist_matrix[current_node][0]
-        
-        gold_at_next = gold_values[next_node]
-        
-        # Calcolo costi ipotetici
-        cost_direct = dist_direct + (dist_direct * alpha * current_gold) ** beta
-        
-        cost_return = dist_to_base + (dist_to_base * alpha * current_gold) ** beta
-        cost_leave = dist_matrix[0][next_node] 
-        cost_via_base = cost_return + cost_leave
-        
-        if cost_via_base < cost_direct:
-            # --- SCELTA: PASSO DALLA BASE ---
-            
-            # 1. Vado fisicamente alla base (se non ci sono già)
-            if current_node != 0:
-                add_segment(current_node, 0, collect_gold_at_end=False)
-                # Arrivato a 0, ho scaricato implicitamente
-            
-            # 2. Riparto dalla base verso next_node
-            add_segment(0, next_node, collect_gold_at_end=True)
-            
-            current_gold = gold_at_next # Ho solo l'oro nuovo
-            
+    trip_limit = compute_trip_limit(alpha, beta, density)
+    cities_in_trip = 0
+
+    local_cache = {}
+
+    def get_path(u, v):
+        if u == v:
+            return [u]
+        if path_map is not None:
+            return path_map[u][v]
+        key = (u, v)
+        if key in local_cache:
+            return local_cache[key]
+        path = nx.shortest_path(graph, u, v, weight="dist")
+        local_cache[key] = path
+        return path
+
+    def path_cost(path_nodes, weight):
+        if not path_nodes or len(path_nodes) < 2:
+            return 0.0
+        cost = 0.0
+        for u, v in zip(path_nodes, path_nodes[1:]):
+            d = float(graph[u][v]["dist"])
+            cost += d + (d * alpha * weight) ** beta
+        return cost
+
+    def append_path(path_nodes, collect_end=False, end_node=None):
+        for node in path_nodes[1:]:
+            g = 0.0
+            if collect_end and end_node is not None and node == end_node:
+                g = float(gold_values[end_node])
+            full_path.append((int(node), float(g)))
+
+    for nxt in order:
+        nxt = int(nxt)
+        g = float(gold_values[nxt])
+
+        p_curr_nxt = get_path(current, nxt)
+        p_curr_base = get_path(current, 0)
+        p_base_nxt = get_path(0, nxt)
+        p_nxt_base = get_path(nxt, 0)
+
+        # scenario A
+        cA_go = path_cost(p_curr_nxt, carried)
+        cA_ret = path_cost(p_nxt_base, carried + g)
+        scoreA = cA_go + cA_ret
+
+        # scenario B
+        cB_ret_now = path_cost(p_curr_base, carried)
+        cB_go = path_cost(p_base_nxt, 0.0)
+        cB_ret = path_cost(p_nxt_base, g)
+        scoreB = cB_ret_now + cB_go + cB_ret
+
+        force_unload = (cities_in_trip >= trip_limit and carried > 0)
+
+        if scoreB < scoreA or force_unload:
+            if current != 0:
+                append_path(p_curr_base, collect_end=False)
+            append_path(p_base_nxt, collect_end=True, end_node=nxt)
+            carried = g
+            cities_in_trip = 1
         else:
-            # --- SCELTA: VADO DIRETTO ---
-            add_segment(current_node, next_node, collect_gold_at_end=True)
-            current_gold += gold_at_next # Accumulo
-            
-        current_node = next_node
+            append_path(p_curr_nxt, collect_end=True, end_node=nxt)
+            carried += g
+            cities_in_trip += 1
 
-    # Alla fine devo tornare alla base fisicamente
-    if current_node != 0:
-        add_segment(current_node, 0, collect_gold_at_end=False)
-        
+        current = nxt
+
+    if current != 0:
+        append_path(get_path(current, 0), collect_end=False)
+
     return full_path
 
 
+# --------------------------
+# MAIN solution
+# --------------------------
+def solution(p: Problem):
+    n, gold_values, dist_matrix, path_map = get_problem_data(p, threshold=100)
+    density = estimate_density(p)
+    alpha, beta = float(p.alpha), float(p.beta)
 
-def solution(p:Problem):
-    #estraggo i dati utili dal problema p 
-    alpha = p.alpha
-    beta = p.beta
-    num_cities, gold_values, dist_matrix = get_problem_data(p)
-    
-    #EA 
-    POP_SIZE = max(100, int(10*np.sqrt(num_cities)))
-    MAX_GENERATIONS = max(200, int(20*np.sqrt(num_cities)))
-    MUTATION_RATE = 0.2
-    OFFSPRING_SIZE = int(POP_SIZE*0.5)
-    
-    raw_population = initialize_population(num_cities, POP_SIZE, dist_matrix)
-    #for i in range(5):
-     #   print(f"individuo {i}: {population[i]}")
-     
-    #Convertiamo la popolazione in una lista di tuple: (fitness, individual)
-    # Calcoliamo la fitness una volta sola all'inizio
+    # -------- N grande: greedy lazy (come tuo) --------
+    if n > 100:
+        """
+        print(f"Lazy Greedy per N={n}...")
+
+        dist_from_base = nx.single_source_dijkstra_path_length(p.graph, 0, weight="dist")
+        dist_to_base = dist_from_base  # grafo non diretto
+
+        current = 0
+        carried = 0.0
+        unvisited = set(range(1, n))
+        order = []
+
+        limit = compute_trip_limit(alpha, beta, density)
+        items_in_trip = 0
+
+        pbar = tqdm(total=len(unvisited), desc="Greedy Building", disable=(n < 300))
+
+        while unvisited:
+            local_dists = nx.single_source_dijkstra_path_length(p.graph, current, weight="dist")
+
+            candidates = list(unvisited)
+            if len(candidates) > 50:
+                candidates = random.sample(candidates, 50)
+
+            best_next = min(
+                candidates,
+                key=lambda c: local_dists.get(c, float("inf")) + (local_dists.get(c, float("inf")) * alpha * carried) ** beta
+            )
+
+            d_go = local_dists.get(best_next, 1e9)
+            d_ret_fut = dist_to_base.get(best_next, 1e9)
+            d_ret_now = dist_to_base.get(current, 1e9)
+            d_leave = dist_from_base.get(best_next, 1e9)
+
+            cost_cont = d_go + (d_go * alpha * carried) ** beta + (d_ret_fut * alpha * (carried + gold_values[best_next])) ** beta
+            cost_unload = (d_ret_now + (d_ret_now * alpha * carried) ** beta) + d_leave + (d_ret_fut * alpha * gold_values[best_next]) ** beta
+
+            if (cost_unload < cost_cont) or (items_in_trip >= limit):
+                carried = 0.0
+                items_in_trip = 0
+
+            order.append(best_next)
+            unvisited.remove(best_next)
+            current = best_next
+            carried += float(gold_values[best_next])
+            items_in_trip += 1
+
+            if pbar is not None:
+                pbar.update(1)
+
+        if pbar is not None:
+            pbar.close()
+
+        return reconstruct_path(order, gold_values, None, alpha, beta, p.graph, density)
+        """
+    # -------- N piccolo: GA --------
+    POP_SIZE = max(100, int(10 * np.sqrt(n)))
+    MAX_GENERATIONS = max(200, int(20 * np.sqrt(n)))
+    MUTATION_RATE = 0.1 if n < 50 else 0.2
+    OFFSPRING_SIZE = int(POP_SIZE * 0.5)
+
+    raw_pop = initialize_population(n, POP_SIZE, dist_matrix)
+
     population = []
-    for tour in raw_population:
-        fit = calculate_fitness(tour, gold_values, dist_matrix, alpha, beta)
+    for tour in raw_pop:
+        fit = calculate_fitness(tour, gold_values, p.graph, path_map, alpha, beta, density)
         population.append((fit, tour))
-    
+
     population.sort(key=lambda x: x[0])
-    best_fitness = population[0][0]
-    best_tour = population[0][1]
-        
-    step = 0
+    best_fit, best_tour = population[0]
+
     no_improv = 0
-    while step < MAX_GENERATIONS:
+    for _ in tqdm(range(MAX_GENERATIONS), desc="GA"):
         offspring = []
-        # Generiamo i figli
         for _ in range(OFFSPRING_SIZE):
-            # NOTA: Nel tuo codice originale facevi O mutazione O crossover.
-            # È meglio fare Crossover E POI Mutazione sul risultato.
-            
-            # A. Selezione Genitori (Tournament)
-            p1_tuple = tournament_selection(population)
-            p2_tuple = tournament_selection(population)
-            p1, p2 = p1_tuple[1], p2_tuple[1] # Estraiamo solo i tour
-            
-            # B. Crossover (sempre, o con alta probabilità)
-            if np.random.random() < 0.8:
-                child_tour = crossover(p1, p2)
-            else:
-                child_tour = p1.copy()
-            
-            # C. Mutazione
-            child_tour = mutate(child_tour, MUTATION_RATE)
-            
-            # Calcolo fitness del figlio
-            child_fit = calculate_fitness(child_tour, gold_values, dist_matrix, alpha, beta)
-            
-            offspring.append((child_fit, child_tour))
-            
-        # STEADY STATE: Aggiungi figli e tieni solo i migliori
+            p1 = tournament_selection(population)[1]
+            p2 = tournament_selection(population)[1]
+
+            child = crossover(p1, p2) if np.random.random() < 0.8 else p1.copy()
+            child = mutate(child, MUTATION_RATE)
+
+            child_fit = calculate_fitness(child, gold_values, p.graph, path_map, alpha, beta, density)
+            offspring.append((child_fit, child))
+
         population.extend(offspring)
-        
-        # Ordina per fitness (crescente, perché minore è meglio)
         population.sort(key=lambda x: x[0])
-        
-        # Taglia la popolazione per tornare alla dimensione originale (sopravvivono i migliori)
         population = population[:POP_SIZE]
-        
-        # Controlla miglioramenti (Logica Adattiva)
-        current_best_fit = population[0][0]
-        
-        if current_best_fit < best_fitness:
-            best_fitness = current_best_fit
-            best_tour = population[0][1]
+
+        if population[0][0] < best_fit:
+            best_fit, best_tour = population[0]
             no_improv = 0
-            # Se troviamo un miglioramento, resettiamo un po' la mutation rate verso il basso
-            # per sfruttare la zona buona (exploitation)
-            MUTATION_RATE = max(0.1, MUTATION_RATE * 0.9) 
+            MUTATION_RATE = max(0.1, MUTATION_RATE * 0.9)
         else:
             no_improv += 1
-            
-        # Gestione Stagnazione (Logica Adattiva tua)
-        if no_improv > 20:
-            # Siamo bloccati? Aumentiamo il caos!
-            MUTATION_RATE = min(0.6, MUTATION_RATE * 1.5) # Ho messo max 0.6 per non rompere tutto
-            # Reset counter parziale per non farla salire all'infinito subito
-            no_improv = 10 
-            
-        step += 1
-        
-        # Opzionale: Stampa progresso ogni tanto
-        if step % 100 == 0:
-            print(f"Step {step} | Best: {best_fitness:.2f} | MutRate: {MUTATION_RATE:.2f}")
 
-    # --- 5. FORMATTAZIONE RISULTATO ---
-    # Dobbiamo ricostruire il percorso (città, oro) esplicito
-    # Usiamo la logica della fitness ma salvando il path invece di sommare solo il costo
-    
-    final_path = reconstruct_path(best_tour, gold_values, dist_matrix,  alpha, beta, p.graph)
-    return final_path
+        if no_improv > 30:
+            MUTATION_RATE = min(0.6, MUTATION_RATE * 1.5)
+            no_improv = 15
+
+    return reconstruct_path(best_tour, gold_values, path_map, alpha, beta, p.graph, density)
+
 
 def check_solution_score(p: Problem, path):
-    total_cost = 0
-    current_node = 0
-    current_weight = 0 # Peso che ho sul camion
-    
-    for next_node, collected_gold in path:
-        # Ora next_node è sicuramente un vicino fisico di current_node
-        # p.cost calcola il costo del movimento
-        edge_cost = p.cost([current_node, next_node], current_weight)
-        total_cost += edge_cost
-        
-        # Aggiorno posizione
-        current_node = next_node
-        
-        # Aggiorno peso
-        if current_node == 0:
-            current_weight = 0 # Scarico
+    total = 0.0
+    current = 0
+    weight = 0.0
+    for nxt, g in path:
+        total += float(p.cost([current, nxt], weight))
+        current = nxt
+        if current == 0:
+            weight = 0.0
         else:
-            current_weight += collected_gold # Carico (se collected_gold è 0, transito e basta)
-            
-    return total_cost
+            weight += float(g)
+    return total
+
+
 
 if __name__ == '__main__':
-    p = Problem(100, density=0.2, alpha=2, beta=1, seed=42)
+    """
+    p = Problem(1000, density=0.2, alpha=1, beta=1, seed=42)
     
     print("-" * 50)
-    print("CALCOLO BASELINE (Prof)...")
+    print("CALCOLO BASELINE")
     baseline_cost = p.baseline()
     print(f"Costo Baseline: {baseline_cost:,.2f}")
     
-    print("-" * 50)
-    print("CALCOLO GENETIC ALGORITHM (Tuo)...")
+    #print("-" * 50)
+    print("CALCOLO GENETIC ALGORITHM")
     solution_path = solution(p)
     
     # Calcolo il costo della tua soluzione
-    my_cost = check_solution_score(p, solution_path)
+    my_cost = float(check_solution_score(p, solution_path))
     print(f"Costo Tuo GA:   {my_cost:,.2f}")
     
     print("-" * 50)
@@ -385,5 +443,75 @@ if __name__ == '__main__':
         print(f"❌ SCONFITTA. La baseline è migliore di {-gap:,.2f}")
         
     print(f"Lunghezza percorso: {len(solution_path)} tappe")
+    """
+    from itertools import product
+    import pandas as pd
     
+    results = []
+
+    n_cities = [10]
+    alpha_values = [1.0]
+    beta_values = [0.5,1.0,2.0,4.0]
+    density_values = [0.5]
+    seed = 42
+
+    param_list = list(product(n_cities, density_values, alpha_values, beta_values))
+
+    for n, density, alpha, beta in tqdm(param_list, desc="grid"):
+        try:
+            p = Problem(n, density=density, alpha=alpha, beta=beta, seed=seed)
+
+            # baseline prof
+            baseline_cost = float(p.baseline())
+
+            # tua soluzione
+            path = solution(p)
+
+            # validazione minima: deve finire a 0
+            ends_at_base = (len(path) > 0 and path[-1][0] == 0)
+
+            # costo tuo
+            my_cost = float(check_solution_score(p, path)) if ends_at_base else np.nan
+
+            # miglioramento
+            improvement = (baseline_cost - my_cost) / baseline_cost * 100.0 if np.isfinite(my_cost) else np.nan
+
+            density_used = density
+            trip_limit_used = compute_trip_limit(alpha, beta, density)
+            
+            results.append({
+                "n_cities": n,
+                "density": density,
+                "density_used": density_used,
+                "alpha": alpha,
+                "beta": beta,
+                "trip_limit_used": trip_limit_used,
+                "seed": seed,
+                "baseline_cost": baseline_cost,
+                "my_cost": my_cost,
+                "improvement_pct": improvement,
+                "wins": (my_cost < baseline_cost) if np.isfinite(my_cost) else False,
+                "path_len": len(path),
+            })
+
+        except Exception as e:
+            results.append({
+                "n_cities": n,
+                "density": density,
+                "density_used": density,
+                "alpha": alpha,
+                "beta": beta,
+                "trip_limit_used": np.nan,
+                "seed": seed,
+                "baseline_cost": np.nan,
+                "my_cost": np.nan,
+                "improvement_pct": np.nan,
+                "wins": False,
+                "path_len": np.nan,
+                "error": f"{type(e).__name__}: {e}",
+            })
+
+    df = pd.DataFrame(results)
+    df.to_csv("results_grid_1000.csv", index=False)
+
     
