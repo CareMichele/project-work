@@ -10,18 +10,13 @@ from Problem import Problem
 from s349483 import solution
 from src.utils import check_solution_score
 
-def compute_trip_limit(alpha, beta, density):
-    if alpha <= 0 or beta < 2:
-        return np.inf
-    return max(1, int((6 - beta) * (0.5 + density / 2)))
-
 def run_grid():
     results = []
 
-    n_cities = [10]
-    alpha_values = [0.0, 1.0, 2.0, 4.0]
-    beta_values = [0.5, 1.0, 2.0, 4.0]
-    density_values = [0.2, 0.5, 1.0]
+    n_cities = [1000]
+    alpha_values = [1.0,2.0]
+    beta_values = [1.0,2.0]
+    density_values = [0.2,1.0]
     seed = 42
 
     param_list = list(product(n_cities, density_values, alpha_values, beta_values))
@@ -33,20 +28,31 @@ def run_grid():
             # baseline prof
             baseline_cost = float(p.baseline())
 
-            # tua soluzione
+            # my solution
             path = solution(p)
+
+            gold_nodes = tqdm(
+                range(1, p.graph.number_of_nodes()),
+                desc="gold sum",
+                leave=False,
+            )
+            gold_total = np.fromiter(
+                (p.graph.nodes[i]["gold"] for i in gold_nodes),
+                dtype=float,
+            ).sum()
+            gold_picked = sum(g for _, g in path)
+            gold_diff = gold_total - gold_picked
 
             # validazione minima: deve finire a 0
             ends_at_base = (len(path) > 0 and path[-1][0] == 0)
 
-            # costo tuo
+            # my cost
             my_cost = float(check_solution_score(p, path)) if ends_at_base else np.nan
 
-            # miglioramento
+            # improvement
             improvement = (baseline_cost - my_cost) / baseline_cost * 100.0 if np.isfinite(my_cost) else np.nan
 
             density_used = density
-            trip_limit_used = compute_trip_limit(alpha, beta, density)
             
             results.append({
                 "n_cities": n,
@@ -54,13 +60,15 @@ def run_grid():
                 "density_used": density_used,
                 "alpha": alpha,
                 "beta": beta,
-                "trip_limit_used": trip_limit_used,
                 "seed": seed,
                 "baseline_cost": baseline_cost,
                 "my_cost": my_cost,
                 "improvement_pct": improvement,
                 "wins": (my_cost < baseline_cost) if np.isfinite(my_cost) else False,
                 "path_len": len(path),
+                "gold_total": float(gold_total),
+                "gold_picked": float(gold_picked),
+                "gold_diff": float(gold_diff),
             })
 
         except Exception as e:
@@ -70,7 +78,6 @@ def run_grid():
                 "density_used": density,
                 "alpha": alpha,
                 "beta": beta,
-                "trip_limit_used": np.nan,
                 "seed": seed,
                 "baseline_cost": np.nan,
                 "my_cost": np.nan,
@@ -81,13 +88,13 @@ def run_grid():
             })
 
     df = pd.DataFrame(results)
-    df.to_csv("results_grid_split_gold_fraction_0_4_10.csv", index=False)
+    df.to_csv("results_grid_split_gold_fraction_0_4_1000.csv", index=False)
 
     # summary
     ok = df[np.isfinite(df["my_cost"]) & np.isfinite(df["baseline_cost"])]
     win_rate = (ok["my_cost"] < ok["baseline_cost"]).mean() * 100 if len(ok) else 0.0
 
-    print("\nSaved: results_grid_split_gold_fraction_0_4_10.csv")
+    print("\nSaved: results_grid_split_gold_fraction_0_4_1000.csv")
     print(f"Valid runs: {len(ok)}/{len(df)} | Win rate: {win_rate:.1f}%")
 
 if __name__ == "__main__":
