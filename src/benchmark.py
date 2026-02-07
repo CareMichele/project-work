@@ -7,7 +7,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from Problem import Problem
-from s349483 import solution, check_solution_score
+from s349483 import solution
+from src.utils import check_solution_score
 
 def compute_trip_limit(alpha, beta, density):
     if alpha <= 0 or beta < 2:
@@ -17,7 +18,7 @@ def compute_trip_limit(alpha, beta, density):
 def run_grid():
     results = []
 
-    n_cities = [10, 50, 100]
+    n_cities = [10]
     alpha_values = [0.0, 1.0, 2.0, 4.0]
     beta_values = [0.5, 1.0, 2.0, 4.0]
     density_values = [0.2, 0.5, 1.0]
@@ -80,13 +81,13 @@ def run_grid():
             })
 
     df = pd.DataFrame(results)
-    df.to_csv("results_grid_split_gold_fraction_0_4.csv", index=False)
+    df.to_csv("results_grid_split_gold_fraction_0_4_10.csv", index=False)
 
     # summary
     ok = df[np.isfinite(df["my_cost"]) & np.isfinite(df["baseline_cost"])]
     win_rate = (ok["my_cost"] < ok["baseline_cost"]).mean() * 100 if len(ok) else 0.0
 
-    print("\nSaved: results_grid_split_gold_fraction_0_4.csv")
+    print("\nSaved: results_grid_split_gold_fraction_0_4_10.csv")
     print(f"Valid runs: {len(ok)}/{len(df)} | Win rate: {win_rate:.1f}%")
 
 if __name__ == "__main__":
