@@ -13,10 +13,10 @@ from src.utils import check_solution_score
 def run_grid():
     results = []
 
-    n_cities = [10,100,1000]
-    alpha_values = [0.0,0.5,1.0,2.0,4.0]
-    beta_values = [0.0,1.0,2.0,3.0,4.0]
-    density_values = [0.1,0.2,0.5,0.7,1.0]
+    n_cities = [50,300,1000]
+    alpha_values = [0.5,1.0,5.0]
+    beta_values = [4.0]
+    density_values = [0.2,0.5,1.0]
     seed = 42
 
     param_list = list(product(n_cities, density_values, alpha_values, beta_values))
@@ -85,7 +85,7 @@ def run_grid():
             })
 
     df = pd.DataFrame(results)
-    df.to_csv("final_results_grid.csv", index=False)
+    df.to_csv("prova_casi_estremi.csv", index=False)
 
     # summary
     ok = df[np.isfinite(df["my_cost"]) & np.isfinite(df["baseline_cost"])]
