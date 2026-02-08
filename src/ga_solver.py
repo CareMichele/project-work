@@ -2,15 +2,17 @@ from tqdm import tqdm
 import numpy as np
 import random
 
-from .utils import estimate_density, get_problem_data
+from .utils import get_problem_data
 
 PICKUP_FRACTION = 0.4
 
-
+# create a greedy tour starting from the base
 def greedy_from_base(n, dist_matrix):
     unvisited = set(range(1, n))
     tour = []
     current = 0
+    # As long as there are unvisited nodes, 
+    # choose the closest one based on the precomputed distance
     while unvisited:
         nxt = min(unvisited, key=lambda c: dist_matrix[current][c])
         tour.append(nxt)
@@ -18,7 +20,8 @@ def greedy_from_base(n, dist_matrix):
         current = nxt
     return np.array(tour, dtype=int)
 
-
+# create a greedy tour starting from a random city
+# serves to generate different initial solutions in the GA population
 def greedy_nearest_neighbor(n, dist_matrix):
     unvisited = set(range(1, n))
     start = random.choice(list(unvisited))
@@ -32,7 +35,7 @@ def greedy_nearest_neighbor(n, dist_matrix):
         current = nxt
     return np.array(tour, dtype=int)
 
-
+# constructs the initial population of the GA
 def initialize_population(n, pop_size, dist_matrix):
     population = []
     base_tour = np.arange(1, n, dtype=int)
@@ -51,13 +54,16 @@ def initialize_population(n, pop_size, dist_matrix):
 
     return population
 
-
-def calculate_fitness(ind, gold_values, graph, path_map, alpha, beta, density):
+# uses the same A vs B mechanism used for n > 100, 
+# but here the distances/paths used are those on the graph 
+# (from path_map and dist_matrix precomputed with Dijkstra)
+def calculate_fitness(ind, gold_values, graph, path_map, alpha, beta):
     current = 0
     carried = 0.0
     total = 0.0
     remaining = gold_values.copy()
 
+    # same formula used for n > 100
     def path_cost(path_nodes, weight):
         if not path_nodes or len(path_nodes) < 2:
             return 0.0
@@ -67,6 +73,7 @@ def calculate_fitness(ind, gold_values, graph, path_map, alpha, beta, density):
             cost += d + (d * alpha * weight) ** beta
         return cost
 
+    # calculate the total distance of a path
     def path_distance(path_nodes):
         if not path_nodes or len(path_nodes) < 2:
             return 0.0
@@ -85,6 +92,7 @@ def calculate_fitness(ind, gold_values, graph, path_map, alpha, beta, density):
             g = g_rem * PICKUP_FRACTION
         remaining[nxt] = g_rem - g
 
+        # They are used to calculate the costs of A and B in fitness
         p_curr_nxt = path_map[current][nxt]
         p_curr_base = path_map[current][0]
         p_base_nxt = path_map[0][nxt]
@@ -108,6 +116,8 @@ def calculate_fitness(ind, gold_values, graph, path_map, alpha, beta, density):
 
         current = int(nxt)
 
+    # The logic is the same for n > 100, 
+    # only the distance criterion changes (graph, non-Euclidean).
     remaining_cities = [i for i in range(1, len(gold_values)) if remaining[i] > 0]
     while remaining_cities:
         nxt = min(remaining_cities, key=lambda c: path_distance(path_map[current][c]))
@@ -141,12 +151,12 @@ def calculate_fitness(ind, gold_values, graph, path_map, alpha, beta, density):
     total += path_cost(path_map[current][0], carried)
     return total
 
-
+# tournament
 def tournament_selection(population, tau=3):
     pool = random.sample(population, k=tau)
     return min(pool, key=lambda x: x[0])
 
-
+# cycle crossover
 def crossover(p1, p2):
     size = len(p1)
     l1 = np.random.randint(0, size)
@@ -171,7 +181,7 @@ def crossover(p1, p2):
 
     return child
 
-
+# scramble mutation
 def mutate(individual, mutation_rate):
     if np.random.random() < mutation_rate:
         size = len(individual)
@@ -184,8 +194,9 @@ def mutate(individual, mutation_rate):
         individual[l1:l2 + 1] = segment
     return individual
 
-
-def reconstruct_path(order, gold_values, path_map, alpha, beta, graph, density):
+# takes the best tour (order of nodes) and transforms it into the complete path requested
+# converts a visit order into a valid path with (node, gold)
+def reconstruct_path(order, gold_values, path_map, alpha, beta, graph):
     full_path = []
     current = 0
     carried = 0.0
@@ -304,9 +315,10 @@ def reconstruct_path(order, gold_values, path_map, alpha, beta, graph, density):
 
 def solve_ga(p):
     n, gold_values, dist_matrix, path_map = get_problem_data(p)
-    density = estimate_density(p)
+    #density = estimate_density(p)
     alpha, beta = float(p.alpha), float(p.beta)
 
+    # set the GA parameters based on n
     pop_size = max(100, int(10 * np.sqrt(n)))
     max_generations = max(200, int(20 * np.sqrt(n)))
     mutation_rate = 0.1 if n < 50 else 0.2
@@ -314,15 +326,19 @@ def solve_ga(p):
 
     raw_pop = initialize_population(n, pop_size, dist_matrix)
 
+    # transform the raw population into a population with associated fitness value
     population = []
     for tour in raw_pop:
-        fit = calculate_fitness(tour, gold_values, p.graph, path_map, alpha, beta, density)
+        fit = calculate_fitness(tour, gold_values, p.graph, path_map, alpha, beta)
         population.append((fit, tour))
 
+    # sort the population by fitness and save the best
     population.sort(key=lambda x: x[0])
     best_fit, best_tour = population[0]
 
     no_improv = 0
+    
+    #GA loop (selection + crossover + mutation, with elitism and adaptive mutation)
     for _ in tqdm(range(max_generations), desc="GA"):
         offspring = []
         for _ in range(offspring_size):
@@ -332,7 +348,7 @@ def solve_ga(p):
             child = crossover(p1, p2) if np.random.random() < 0.8 else p1.copy()
             child = mutate(child, mutation_rate)
 
-            child_fit = calculate_fitness(child, gold_values, p.graph, path_map, alpha, beta, density)
+            child_fit = calculate_fitness(child, gold_values, p.graph, path_map, alpha, beta)
             offspring.append((child_fit, child))
 
         population.extend(offspring)
@@ -346,8 +362,10 @@ def solve_ga(p):
         else:
             no_improv += 1
 
+        #if it does not improve for many generations, 
+        # increase the mutation_rate to explore more
         if no_improv > 30:
             mutation_rate = min(0.6, mutation_rate * 1.5)
             no_improv = 15
 
-    return reconstruct_path(best_tour, gold_values, path_map, alpha, beta, p.graph, density)
+    return reconstruct_path(best_tour, gold_values, path_map, alpha, beta, p.graph)

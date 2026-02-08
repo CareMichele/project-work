@@ -13,10 +13,10 @@ from src.utils import check_solution_score
 def run_grid():
     results = []
 
-    n_cities = [50,300,1000]
-    alpha_values = [0.5,1.0,5.0]
-    beta_values = [4.0]
-    density_values = [0.2,0.5,1.0]
+    n_cities = [10, 100, 1000]
+    alpha_values = [0.0, 0.5, 1.0, 2.0, 4.0]
+    beta_values = [0.0, 1.0, 2.0, 3.0, 4.0]
+    density_values = [0.1, 0.2, 0.5, 0.7, 1.0]
     seed = 42
 
     param_list = list(product(n_cities, density_values, alpha_values, beta_values))
@@ -31,19 +31,7 @@ def run_grid():
             # my solution
             path = solution(p)
 
-            """gold_nodes = tqdm(
-                range(1, p.graph.number_of_nodes()),
-                desc="gold sum",
-                leave=False,
-            )
-            gold_total = np.fromiter(
-                (p.graph.nodes[i]["gold"] for i in gold_nodes),
-                dtype=float,
-            ).sum()
-            gold_picked = sum(g for _, g in path)
-            gold_diff = gold_total - gold_picked"""
-
-            # validazione minima: deve finire a 0
+            # controls if path is not empty and ends at base node
             ends_at_base = (len(path) > 0 and path[-1][0] == 0)
 
             # my cost
@@ -51,13 +39,10 @@ def run_grid():
 
             # improvement
             improvement = (baseline_cost - my_cost) / baseline_cost * 100.0 if np.isfinite(my_cost) else np.nan
-
-            #density_used = density
             
             results.append({
                 "n_cities": n,
                 "density": density,
-                #"density_used": density_used,
                 "alpha": alpha,
                 "beta": beta,
                 "seed": seed,
@@ -72,7 +57,6 @@ def run_grid():
             results.append({
                 "n_cities": n,
                 "density": density,
-                #"density_used": density,
                 "alpha": alpha,
                 "beta": beta,
                 "seed": seed,
@@ -85,7 +69,7 @@ def run_grid():
             })
 
     df = pd.DataFrame(results)
-    df.to_csv("prova_casi_estremi.csv", index=False)
+    df.to_csv("final_results_grid.csv", index=False)
 
     # summary
     ok = df[np.isfinite(df["my_cost"]) & np.isfinite(df["baseline_cost"])]

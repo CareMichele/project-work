@@ -9,7 +9,6 @@ def solution(p: Problem):
         path = solve_large_n(p)
     else:
         path = solve_ga(p)
-    print(path)
     return path
 
 

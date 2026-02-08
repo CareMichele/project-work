@@ -79,22 +79,3 @@ class Problem:
         color = ['red'] + ['lightblue'] * (len(self._graph) - 1)
         return nx.draw(self._graph, pos, with_labels=True, node_color=color, node_size=size)
     
-
-P = Problem(10, density=0.2, alpha=1, beta=1)
-P.plot()
-
-logging.getLogger().setLevel(logging.WARNING)
-
-#ic(Problem(100, density=0.2, alpha=1, beta=1).baseline())
-#ic(Problem(100, density=0.2, alpha=2, beta=1).baseline())
-#ic(Problem(100, density=0.2, alpha=1, beta=2).baseline())
-#ic(Problem(100, density=1, alpha=1, beta=1).baseline())
-#ic(Problem(100, density=1, alpha=2, beta=1).baseline())
-#ic(Problem(100, density=1, alpha=1, beta=2).baseline())
-#ic(Problem(1_000, density=0.2, alpha=1, beta=1).baseline())
-#ic(Problem(1_000, density=0.2, alpha=2, beta=1).baseline())
-#ic(Problem(1_000, density=0.2, alpha=1, beta=2).baseline())
-#ic(Problem(1_000, density=1, alpha=1, beta=1).baseline())
-#ic(Problem(1_000, density=1, alpha=2, beta=1).baseline())
-#ic(Problem(1_000, density=1, alpha=1, beta=2).baseline())
-None
