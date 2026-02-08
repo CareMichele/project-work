@@ -93,14 +93,6 @@ def solve_large_n(p: Problem):
             cost += d + (d * alpha * weight) ** beta
         return cost
 
-    def path_distance(path_nodes):
-        if not path_nodes or len(path_nodes) < 2:
-            return 0.0
-        dist = 0.0
-        for u, v in zip(path_nodes, path_nodes[1:]):
-            dist += float(graph[u][v]["dist"])
-        return dist
-
     def euclid(a, b):
         pa = pos.get(a)
         pb = pos.get(b)

@@ -1,34 +1,57 @@
 # project-work
 
-### Repository Setup
+## Solution Overview
 
-1. Create a Git repository named project-work.
-2. Inside the repository, include:
-    - A Python script named Problem.py which generates the problem through the class constructor and the baseline solution. 
-    - A Python file named s<student_id>.py that contains a function named solution(p:Problem) which receives as input an instance of the class Problem which generates the problem.
-    - A folder named src/ containing all additional code required to run your solution.
-    - A TXT file named base_requirements.txt containing the basic python libraries that you need to run the code to generate the problem.
+The entry point is [s349483.py](s349483.py). The `solution(p)` function selects the algorithm based on the instance size:
+
+- **n <= 100**: Genetic Algorithm (GA) in [src/ga_solver.py](src/ga_solver.py).
+- **n > 100**: Fast constructive heuristic in [src/large_n_solver.py](src/large_n_solver.py).
+
+Both algorithms return a full path as a list of `(node, gold_picked)` pairs. The path always ends at base `(0, 0.0)`.
+
+## Algorithm for n <= 100 (Genetic Algorithm)
+
+Implementation: [src/ga_solver.py](src/ga_solver.py)
+
+1. **Precompute shortest paths**: compute all-pairs shortest paths and distances once (`get_problem_data`). This avoids repeated Dijkstra calls during evaluation.
+2. **Population initialization**:
+    - One greedy tour starting from the base (nearest by distance).
+    - Several nearest-neighbor tours starting from random cities.
+    - The rest are random permutations.
+    - This mix gives a good balance between quality and diversity.
+3. **Fitness evaluation (cost simulation)**:
+    - Each candidate is a permutation of cities (no base node inside the genome).
+    - The simulation keeps track of carried gold and remaining gold per city.
+    - At each city, it picks a fixed fraction `PICKUP_FRACTION = 0.4` of the remaining gold.
+    - For the next move, it compares two options:
+      - **A**: go directly to the next city and return to base afterward.
+      - **B**: return to base first, then go to the next city and return.
+    - The cheaper option is chosen locally and its cost is accumulated.
+    - This approximates when it is convenient to unload without explicitly modeling multiple trips per city during the GA search.
+4. **GA operators**:
+    - **Selection**: tournament selection with small pool size.
+    - **Crossover**: order crossover that preserves relative order and yields valid permutations.
+    - **Mutation**: random segment shuffle, with a mutation rate that adapts based on progress.
+5. **Reconstruction**:
+    - The best permutation is converted into a full path by inserting the shortest paths between consecutive cities and the base.
+
+Rationale: GA explores the order of visiting cities, while the local return decision handles the unload timing. This is effective for medium-size instances where a full combinatorial search is too expensive but GA can still explore a large portion of the space.
+
+## Algorithm for n > 100 (Constructive Heuristic)
+
+Implementation: [src/large_n_solver.py](src/large_n_solver.py)
+
+1. **Nearest-neighbor tour** based on Euclidean coordinates (fast ordering on positions, not on graph distances).
+2. **Greedy pickup policy** with fixed fraction `PICKUP_FRACTION = 0.4`.
+3. **Local return decision** at each step:
+    - Compute the cost of two alternatives using the current carried gold:
+      - **A**: go to next city, then return to base.
+      - **B**: return to base first, then go to the next city and return.
+    - Select the cheaper alternative and append the corresponding shortest paths to the output path.
+4. **Cleanup pass**:
+    - After the main tour, if any city still has gold, visit remaining cities in nearest-neighbor order.
+    - Apply the same return decision and append the resulting paths.
+
+Rationale: for large `n`, exhaustive evaluation or population search is too slow. The heuristic is linear in the number of cities (plus shortest-path lookups) and still uses the cost model to decide when to unload at the base.
 
 
-### Main File Requirements (s<student_id>.py)
-
-1. Import the class responsible from Problem.py for generating the problem in your code.
-2. Implement a method called solution() to place in s<student_id>.py that returns the optimal path in the following format: 
-```python
-[(c1, g1), (c2, g2), …, (cN, gN), (0, 0)]
-```
-where:
-- c1, …, cN represent the sequence of cities visited.
-- g1, …, gN represent the corresponding gold collected at each city.
-
-
-### Rules
-1. The thief must start and finish at (0, 0).
-2. Returning to (0, 0) during the route is allowed to unload collected gold before continuing.
-3. Don't forget to change the name of the file s123456.py provided as an example ;).
-
-### Notes
-- It is not necessary to push the report.pdf or log.pdf in this repo.
-- It is mandatory to upload it in "materiale" section of "portale della didattica" at least 168 hours before the exam call.
-- For well commented codes, I can't ensure a higher mark but they would be very welcome.
-- In case you face any issue or you have any doubt text me at the email giuseppe.esposito@polito.it and professor Squillero giovanni.squillero@polito.it.
